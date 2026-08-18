@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+# TODO: replace with the paper's authors, in order, e.g.:
+# - family-names: "Doherty"
+#   given-names: "Aiden"
+#   orcid: "https://orcid.org/0000-0003-1840-0451"
+authors:
+- name: "TODO: add authors"
+title: "Towards harmonised accelerometer-derived physical activity: A comparability study across wrist, thigh, and hip wear locations"
+# doi: TBC  # to be assigned upon publication
+url: "https://github.com/OxWearables/wear-location-comparability"
