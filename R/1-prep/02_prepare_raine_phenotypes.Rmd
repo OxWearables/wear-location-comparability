@@ -1,0 +1,186 @@
+---
+title: "02_prepare_raine_phenotypes"
+output: html_document
+author: "Charilaos Zisou"
+---
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  error = FALSE
+)
+
+rm(list=ls())
+```
+
+```{r load_dependencies}
+# Load required packages 
+if (!require(pacman)) install.packages("pacman")
+pacman::p_load(here, data.table, assertthat, readr)
+
+# Load helper functions
+source(here("R", "1-prep", "utils_prep.R"))
+```
+
+```{r}
+# Initialise filenames
+wrist_actinet_filename <- "raine_daily_collated_wrist_actinet_20260330.csv"
+wrist_stepcount_filename <- "raine_daily_collated_wrist_stepcount_20260330.csv"
+hip_actilife_filename <- "raine_daily_collated_hip_actilife_20260330.csv"
+hip_actilife_wakinghours_filename <- "raine_daily_collated_hip_actilife_wakinghours_20260330.csv"
+
+output_wrist_daily_filename <- "raine_wrist_daily_summaries.csv"
+output_wrist_weekly_filename <- "raine_wrist_weekly_summaries.csv"
+output_hip_daily_filename <- "raine_hip_daily_wakinghours_summaries.csv"
+output_hip_weekly_filename <- "raine_hip_weekly_summaries.csv"
+output_hip_weekly_wakinghours_filename <- "raine_hip_weekly_wakinghours_summaries.csv"
+
+# Create output directories if they don't exist
+invisible(lapply(c(
+  here("output", "intermediate")
+), dir.create, recursive = TRUE, showWarnings = FALSE))
+```
+
+# Prepare Axivity AX3 phenotypes
+
+## OxWearables packages (actinet and stepcount)
+
+```{r}
+# Load data
+dat_wrist_actinet <- data.table::fread(
+  here("output", "derived_accelerometry", wrist_actinet_filename),
+  data.table = FALSE
+)
+
+dat_wrist_stepcount <- data.table::fread(
+  here("output", "derived_accelerometry", wrist_stepcount_filename),
+  data.table = FALSE
+)
+
+# Prepare phenotypes and combine into one data frame
+dat_wrist_daily <- prepare_oxwearables_phenotypes(dat_wrist_actinet, 
+                                                  dat_wrist_stepcount)
+
+# Remove temp data frame to save space
+rm(dat_wrist_actinet, dat_wrist_stepcount)
+```
+
+# Prepare ActiGraph GT3X phenotypes
+
+## ActiLife software
+
+```{r}
+# Load data
+dat_hip_actilife <- data.table::fread(
+  here("output", "derived_accelerometry", hip_actilife_filename),
+  data.table = FALSE
+)
+
+dat_hip_actilife_wakinghours <- data.table::fread(
+  here("output", "derived_accelerometry", hip_actilife_wakinghours_filename),
+  data.table = FALSE
+)
+
+# Prepare phenotypes
+dat_hip_daily <- prepare_actilife_phenotypes(dat_hip_actilife)
+
+dat_hip_daily_wakinghours <- prepare_actilife_phenotypes(
+  dat_hip_actilife_wakinghours
+  )
+
+# Remove temp data frame to save space
+rm(dat_hip_actilife, dat_hip_actilife_wakinghours)
+```
+
+# Day-level quality control
+
+## Main
+
+```{r}
+# Remove days 1 and >10 (not representative of free-living activity)
+dat_wrist_daily <- dat_wrist_daily %>%
+  arrange(filename, date) %>%
+  group_by(filename) %>%
+  filter((row_number() %in% c(2:9))) %>%
+  ungroup()
+
+dat_hip_daily <- dat_hip_daily %>%
+  arrange(filename, date) %>%
+  group_by(filename) %>%
+  filter((row_number() %in% c(2:9))) %>%
+  ungroup()
+
+# Remove days with less than 16 hours of wear time
+dat_wrist_daily <- dat_wrist_daily %>%
+  filter(wear_time_hours >= 16)
+
+dat_hip_daily <- dat_hip_daily %>%
+  filter(wear_time_hours >= 16)
+
+# Make sure waking hour analyses are matching days
+dat_hip_daily_wakinghours <- dat_hip_daily_wakinghours %>%
+  semi_join(dat_hip_daily %>% select(filename, date), by = c("filename", "date"))
+
+# Sanity checks
+assert_that(all(dat_wrist_daily %>% count(filename) %>% pull(n) <= 8), 
+            msg = "Some participants have more than 8 days of data.")
+
+assert_that(all(dat_hip_daily %>% count(filename) %>% pull(n) <= 8), 
+            msg = "Some participants have more than 8 days of data.")
+
+assert_that(all(dat_hip_daily_wakinghours %>% count(filename) %>% pull(n) <= 8), 
+            msg = "Some participants have more than 8 days of data.")
+```
+
+# Aggregate phenotypes to weekly level
+
+```{r}
+pa_cols <-  c(
+  "overall_activity",
+  "steps",
+  "cadence_peak1",
+  "cadence_peak30",
+  "mvpa",
+  "lipa",
+  "sedentary"
+)
+
+# Compute weekly summaries of physical activity phenotypes
+# (aggregating daily measurements into week-level mean and median)
+dat_wrist_weekly <- summarise_weekly_activity(dat_wrist_daily, pa_cols)
+
+dat_hip_weekly <- summarise_weekly_activity(dat_hip_daily,
+                                            c(pa_cols, "overall_activity_counts"))
+
+dat_hip_weekly_wakinghours <- summarise_weekly_activity(dat_hip_daily_wakinghours,
+                                                        c(pa_cols, "overall_activity_counts"))
+```
+
+# Save output files
+
+```{r}
+# Save data frames to CSV files
+out_path <- here("output", "intermediate", output_wrist_daily_filename)
+write_csv(dat_wrist_daily, out_path)
+cat("Wrist daily summaries saved to:", out_path, "\n")
+
+out_path <- here("output", "intermediate", output_wrist_weekly_filename)
+write_csv(dat_wrist_weekly, out_path)
+cat("Wrist weekly summaries saved to:", out_path, "\n")
+
+out_path <- here("output", "intermediate", output_hip_daily_filename)
+write_csv(dat_hip_daily_wakinghours, out_path)
+cat("Hip daily waking-hour summaries saved to:", out_path, "\n")
+
+out_path <- here("output", "intermediate", output_hip_weekly_filename)
+write_csv(dat_hip_weekly, out_path)
+cat("Hip weekly summaries saved to:", out_path, "\n")
+
+out_path <- here("output", "intermediate", output_hip_weekly_wakinghours_filename)
+write_csv(dat_hip_weekly_wakinghours, out_path)
+cat("Waking hours hip weekly summaries saved to:", out_path, "\n")
+```

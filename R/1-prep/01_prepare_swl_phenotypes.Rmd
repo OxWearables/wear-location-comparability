@@ -1,0 +1,173 @@
+---
+title: "01_prepare_swl_phenotypes"
+output: html_document
+author: "Charilaos Zisou"
+---
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  error = FALSE
+)
+
+rm(list=ls())
+```
+
+```{r load_dependencies}
+# Load required packages 
+if (!require(pacman)) install.packages("pacman")
+pacman::p_load(here, data.table, assertthat, readr)
+
+# Load helper functions
+source(here("R", "1-prep", "utils_prep.R"))
+```
+
+```{r}
+# Initialise filenames
+wrist_actinet_filename <- "swl_daily_collated_wrist_actinet_20260330.csv"
+wrist_stepcount_filename <- "swl_daily_collated_wrist_stepcount_20260330.csv"
+thigh_enmo_filename <- "swl_daily_collated_thigh_enmo_20251120.csv"
+thigh_palbatch_crea_filename <- "swl_daily_collated_thigh_palbatch_crea_20251022.csv"
+thigh_palbatch_cadence_filename <- "swl_daily_collated_thigh_palbatch_cadence_20251220.csv"
+
+output_wrist_daily_filename <- "swl_wrist_daily_summaries.csv"
+output_wrist_weekly_filename <- "swl_wrist_weekly_summaries.csv"
+output_thigh_daily_filename <- "swl_thigh_daily_summaries.csv"
+output_thigh_weekly_filename <- "swl_thigh_weekly_summaries.csv"
+
+# Create output directories if they don't exist
+invisible(lapply(c(
+  here("output", "intermediate")
+), dir.create, recursive = TRUE, showWarnings = FALSE))
+```
+
+# Prepare Axivity AX3 phenotypes
+
+## OxWearables packages (actinet and stepcount)
+
+```{r}
+# Load data
+dat_wrist_actinet <- data.table::fread(
+  here("output", "derived_accelerometry", wrist_actinet_filename),
+  data.table = FALSE
+)
+
+dat_wrist_stepcount <- data.table::fread(
+  here("output", "derived_accelerometry", wrist_stepcount_filename),
+  data.table = FALSE
+)
+
+# Prepare phenotypes and combine into one data frame
+dat_wrist_daily <- prepare_oxwearables_phenotypes(dat_wrist_actinet, 
+                                                  dat_wrist_stepcount)
+
+# Remove temp data frame to save space
+rm(dat_wrist_actinet, dat_wrist_stepcount)
+```
+
+# Prepare activPAL3 phenotypes
+
+## PALbatch software
+
+```{r}
+# Load data
+dat_thigh_enmo <- data.table::fread(
+  here("output", "derived_accelerometry", thigh_enmo_filename),
+  data.table = FALSE
+)
+
+dat_thigh_palbatch_crea <- data.table::fread(
+  here("output", "derived_accelerometry", thigh_palbatch_crea_filename),
+  data.table = FALSE
+)
+
+dat_thigh_cadence <- data.table::fread(
+  here("output", "derived_accelerometry", thigh_palbatch_cadence_filename),
+  data.table = FALSE
+)
+
+# Prepare phenotypes and combine into one data frame
+dat_thigh_daily <- prepare_palbatch_phenotypes(dat_thigh_enmo,
+                                               dat_thigh_palbatch_crea, 
+                                               dat_thigh_cadence)
+
+# Remove temp data frame to save space
+rm(dat_thigh_palbatch_crea, dat_thigh_cadence, dat_thigh_enmo)
+```
+
+# Day-level quality control
+
+## Main
+
+```{r}
+# (activPALs only) Remove days 1 and >10 (as these were incorporated into the
+# study protocol as buffer periods for the 8-day recording. Devices were
+# initialised at 15:00 on the first day and removed at mid-day on the last day).
+dat_thigh_daily <- dat_thigh_daily %>%
+  arrange(filename, date) %>%
+  group_by(filename) %>%
+  filter((row_number() %in% c(2:9))) %>%
+  ungroup()
+
+# Remove days with less than 16 hours of wear time
+dat_wrist_daily <- dat_wrist_daily %>%
+  filter(wear_time_hours >= 16)
+
+dat_thigh_daily <- dat_thigh_daily %>%
+  filter(wear_time_hours >= 16)
+
+# (activPALs only) Remove invalid days based on PALbatch algorithm
+dat_thigh_daily <- dat_thigh_daily %>%
+  filter(valid_day == 1)
+
+# Sanity checks
+assert_that(all(dat_wrist_daily %>% count(filename) %>% pull(n) <= 8), 
+            msg = "Some participants have more than 8 days of data.")
+
+assert_that(all(dat_thigh_daily %>% count(filename) %>% pull(n) <= 8), 
+            msg = "Some participants have more than 8 days of data.")
+```
+
+# Aggregate phenotypes to weekly level
+
+```{r}
+pa_cols <-  c(
+  "overall_activity",
+  "steps",
+  "cadence_peak1",
+  "cadence_peak30",
+  "mvpa",
+  "lipa",
+  "sedentary"
+)
+
+# Compute weekly summaries of physical activity phenotypes
+# (aggregating daily measurements into week-level mean and median)
+dat_wrist_weekly <- summarise_weekly_activity(dat_wrist_daily, pa_cols)
+dat_thigh_weekly <- summarise_weekly_activity(dat_thigh_daily, pa_cols)
+```
+
+# Save output files
+
+```{r}
+# Save data frames to CSV files
+out_path <- here("output", "intermediate", output_wrist_daily_filename)
+write_csv(dat_wrist_daily, out_path)
+cat("Wrist daily summaries saved to:", out_path, "\n")
+
+out_path <- here("output", "intermediate", output_wrist_weekly_filename)
+write_csv(dat_wrist_weekly, out_path)
+cat("Wrist weekly summaries saved to:", out_path, "\n")
+
+out_path <- here("output", "intermediate", output_thigh_daily_filename)
+write_csv(dat_thigh_daily, out_path)
+cat("Thigh daily summaries saved to:", out_path, "\n")
+
+out_path <- here("output", "intermediate", output_thigh_weekly_filename)
+write_csv(dat_thigh_weekly, out_path)
+cat("Thigh weekly summaries saved to:", out_path, "\n")
+```

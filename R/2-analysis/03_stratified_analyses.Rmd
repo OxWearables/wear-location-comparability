@@ -1,0 +1,402 @@
+---
+title: "03_stratified_analyses"
+output: html_document
+author: "Charilaos Zisou"
+---
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  error = FALSE
+)
+
+rm(list=ls())
+```
+
+```{r load_dependencies}
+# Load required packages
+if (!require(pacman)) install.packages("pacman")
+pacman::p_load(
+  here,
+  data.table,
+  dplyr,
+  tidyr,
+  grid,
+  officer,
+  flextable,
+  glue,
+  tibble
+)
+
+# Load helper functions
+source(here("R", "2-analysis", "utils_analysis.R"))
+source(here("R", "2-analysis", "utils_display.R"))
+```
+
+```{r}
+# Initialize filenames
+swl_qced_phenotypes_filename <- "swl_qced_phenotypes.csv"
+raine_qced_phenotypes_filename <- "raine_qced_phenotypes.csv"
+
+swl_demographics_filename <- "swl_demographics.csv"
+raine_demographics_filename <- "raine_demographics.csv"
+
+# Create output directories if they don't exist
+invisible(lapply(c(
+  here("output", "prepared", "tables"),
+  here("output", "prepared", "figures")
+), dir.create, recursive = TRUE, showWarnings = FALSE))
+```
+
+# Load and prep data
+
+```{r}
+# Load phenotype data
+dat_swl_qced <- data.table::fread(
+  here("output", "intermediate", swl_qced_phenotypes_filename),
+  data.table = FALSE
+)
+
+dat_raine_qced <- data.table::fread(
+  here("output", "intermediate", raine_qced_phenotypes_filename),
+  data.table = FALSE
+)
+
+# Load demographics data
+swl_demographics <- data.table::fread(
+  here("output", "intermediate", swl_demographics_filename),
+  data.table = FALSE
+  )
+
+raine_demographics <- data.table::fread(
+  here("output", "intermediate", raine_demographics_filename),
+  data.table = FALSE
+)
+
+# Prep demographics data
+swl_demographics <- swl_demographics %>%
+  select(pid, age, sex, bmi)
+
+raine_demographics <- raine_demographics %>%
+  select(pid, age, sex, bmi)
+
+# Merge accelerometer data with demographics
+dat_swl_qced <- merge(dat_swl_qced,
+                      swl_demographics,
+                      by = "pid",
+                      all = FALSE)
+
+dat_raine_qced <- merge(dat_raine_qced,
+                        raine_demographics,
+                        by = "pid",
+                        all = FALSE)
+
+# Prep age and BMI subgroups
+dat_swl_qced <- dat_swl_qced %>%
+  mutate(age_2gp = factor(ifelse(age < 40, "Younger", "Older"), 
+                          levels = c("Younger", "Older")),
+         bmi_2gp = factor(ifelse(bmi < 25, "<25", "25+"), 
+                          levels = c("<25", "25+")))
+
+dat_raine_qced <- dat_raine_qced %>%
+  mutate(age_2gp = factor(ifelse(age < 60, "Younger", "Older"), 
+                          levels = c("Younger", "Older")),
+         bmi_2gp = factor(ifelse(bmi < 25, "<25", "25+"), 
+                          levels = c("<25", "25+")))
+
+# Convert MVPA from hours to mins
+dat_swl_qced <- dat_swl_qced %>%
+  mutate(across(starts_with("mvpa"), ~ .x * 60))
+
+dat_raine_qced <- dat_raine_qced %>%
+  mutate(across(starts_with("mvpa"), ~ .x * 60))
+
+# Remove dataframes to save space
+rm(swl_demographics, raine_demographics)
+```
+
+# Stratified agreement
+
+## Prepare results DataFrame
+
+```{r}
+phenotypes <- c("overall_activity_mean", 
+                "steps_mean", 
+                "cadence_peak1_mean", 
+                "mvpa_mean", 
+                "lipa_mean", 
+                "sedentary_mean")
+subgroups  <- c("age_2gp", "sex", "bmi_2gp")
+
+# Loop over subgroups and phenotypes and calculate stratified correlations and SMA regression equations
+stratified_results <- list()
+for (subg in subgroups) {
+  for (pheno in phenotypes) {
+    skewed_phenotype <- startsWith(pheno, "mvpa")
+    
+    # SWL
+    res_swl <- stratified_correlation(dat_swl_qced, 
+                                      pheno, 
+                                      subg, 
+                                      skewed_phenotype) %>%
+      mutate(study = "swl",
+             phenotype = pheno,
+             analysis = subg,
+             subgroup = as.character(subgroup))
+
+    # Raine
+    res_raine <- stratified_correlation(dat_raine_qced, 
+                                        pheno, 
+                                        subg, 
+                                        skewed_phenotype) %>%
+      mutate(study = "raine",
+             phenotype = pheno,
+             analysis = subg,
+             subgroup = as.character(subgroup))
+
+    # Add both to the growing list
+    stratified_results[[length(stratified_results) + 1]] <- res_swl
+    stratified_results[[length(stratified_results) + 1]] <- res_raine
+  }
+}
+
+stratified_results <- bind_rows(stratified_results) %>%
+  relocate(study, phenotype, analysis)
+```
+
+## Prepare results for plotting
+
+```{r}
+row_labels <- data.frame(phenotype = c("overall_activity_mean",
+                                       "steps_mean",
+                                       "cadence_peak1_mean",
+                                       "mvpa_mean",
+                                       "lipa_mean",
+                                       "sedentary_mean"),
+                         label = c("Overall activity (mg/day)",
+                                   "Step count (steps/day)",
+                                   "Peak 1-min cadence (steps/min)",
+                                   "MVPA (minutes/day)*",
+                                   "Light physical activity (hours/day)",
+                                   "Sedentary behaviour (hours/day)"))
+
+# Prep age, sex and BMI results dataframes
+stratified_results_age <- stratified_results %>%
+  filter(analysis == "age_2gp") %>%
+  mutate(mycolour = if_else(subgroup == "Younger", "black", "white"),
+         subgroup_numbered = if_else(subgroup == "Younger", "gp1", "gp2"))
+
+stratified_results_sex <- stratified_results %>%
+  filter(analysis == "sex") %>%
+  mutate(mycolour = if_else(subgroup == "Male", "black", "white"),
+         subgroup_numbered = if_else(subgroup == "Male", "gp1", "gp2"))
+
+stratified_results_bmi <- stratified_results %>%
+  filter(analysis == "bmi_2gp") %>%
+  mutate(mycolour = if_else(subgroup == "<25", "black", "white"),
+         subgroup_numbered = if_else(subgroup == "<25", "gp1", "gp2"))
+```
+
+# Table S2: Regression equations by subgroups of age, sex, BMI for SWL and Raine Study Gen1
+
+```{r}
+# Initialise subgroup columns
+subgroup_cols <- c("Younger", "Older", "Male", "Female", "<25", "25+")
+
+# Prepare table for each study
+swl_equations_table   <- make_equations_table(stratified_results, 
+                                              study_str = "swl",
+                                              phenotypes = phenotypes,
+                                              subgroup_cols = subgroup_cols)
+raine_equations_table <- make_equations_table(stratified_results, 
+                                              study_str = "raine",
+                                              phenotypes = phenotypes,
+                                              subgroup_cols = subgroup_cols)
+
+# Save output to .docx
+doc <- read_docx() %>%
+  body_add_fpar(fpar(ftext(
+    "SMART Work & Life (Wrist vs. thigh)", prop = fp_text(bold = TRUE)
+  ))) %>%
+  body_add_table(value = swl_equations_table) %>%
+  body_add_par("") %>%
+  body_add_fpar(fpar(ftext(
+    "Raine Study Gen1 (Wrist vs. hip)", prop = fp_text(bold = TRUE)
+  ))) %>%
+  body_add_table(value = raine_equations_table)
+
+print(doc, target = here("output", "prepared", "tables", "Table_S2.docx"))
+```
+
+# Figure S7: Age forest plot
+
+```{r}
+# Pull counts from the results table
+n_counts <- stratified_results_age %>%
+  distinct(study, subgroup, n) %>%
+  tidyr::unite(key, study, subgroup) %>%
+  tibble::deframe()
+
+n_swl_g1   <- n_counts["swl_Younger"]
+n_swl_g2   <- n_counts["swl_Older"]
+n_raine_g1 <- n_counts["raine_Younger"]
+n_raine_g2 <- n_counts["raine_Older"]
+
+# Prepare figure labels
+label_swl <- glue::glue(
+  "SMART Work & Life (wrist vs. thigh) \n Young (n={n_swl_g1}) vs Middle-aged adults (n={n_swl_g2})"
+)
+label_raine <- glue::glue(
+  "Raine Study Gen1 (wrist vs. hip) \n Middle-aged (n={n_raine_g1}) vs Older adults (n={n_raine_g2})"
+)
+
+# Create forest plot
+figure <- forest_plot(
+  setNames(list(stratified_results_age %>% filter(study == "swl"),
+                stratified_results_age %>% filter(study == "raine")),
+           c(as.character(label_swl), as.character(label_raine))),
+  col.key = "phenotype",
+  col.estimate = "corr_est",
+  col.lci = "corr_lci",
+  col.uci = "corr_uci",
+  row.labels = row_labels,
+  xlab = "r (95% CI)",
+  xlim = c(0.2, 1.0),
+  exponentiate = FALSE,
+  col.keep = "subgroup_numbered",
+  fill = "mycolour",
+  shape = "square filled",
+  data.function = "move_rows",
+  ciunder = TRUE,
+  ci.delim = ", ",
+  stroke = 0.5,
+  row.labels.heading = "Phenotype",
+  plot.margin = margin(8, 8, 2, 8, "mm"),
+  mid.space = unit(15, "mm")
+)
+
+ggsave(filename = here("output", "prepared", "figures", "Figure_S7.png"),
+       plot = figure$plot,
+       width = 21,
+       height = 11,
+       units = "cm",
+       dpi = 300,
+       bg = "white")
+```
+
+# Figure S8: Sex forest plot
+
+```{r}
+# Pull counts from the results table
+n_counts <- stratified_results_sex %>%
+  distinct(study, subgroup, n) %>%
+  tidyr::unite(key, study, subgroup) %>%
+  tibble::deframe()
+
+n_swl_g1   <- n_counts["swl_Male"]
+n_swl_g2   <- n_counts["swl_Female"]
+n_raine_g1 <- n_counts["raine_Male"]
+n_raine_g2 <- n_counts["raine_Female"]
+
+# Prepare figure labels
+label_swl   <- glue::glue(
+  "SMART Work & Life (wrist vs. thigh) \n Men (n={n_swl_g1}) vs Women (n={n_swl_g2})"
+)
+label_raine <- glue::glue(
+  "Raine Study Gen1 (wrist vs. hip) \n Men (n={n_raine_g1}) vs Women (n={n_raine_g2})"
+)
+
+# Create forest plot
+figure <- forest_plot(
+  setNames(list(stratified_results_sex %>% filter(study == "swl"),
+                stratified_results_sex %>% filter(study == "raine")),
+           c(as.character(label_swl), as.character(label_raine))),
+  col.key = "phenotype",
+  col.estimate = "corr_est",
+  col.lci = "corr_lci",
+  col.uci = "corr_uci",
+  row.labels = row_labels,
+  xlab = "r (95% CI)",
+  xlim = c(0.2, 1.0),
+  exponentiate = FALSE,
+  col.keep = "subgroup_numbered",
+  fill = "mycolour",
+  shape = "square filled",
+  data.function = "move_rows",
+  ciunder = TRUE,
+  ci.delim = ", ",
+  stroke = 0.5,
+  row.labels.heading = "Phenotype",
+  plot.margin = margin(8, 8, 2, 8, "mm"),
+  mid.space = unit(15, "mm")
+)
+
+ggsave(filename = here("output", "prepared", "figures", "Figure_S8.png"),
+       plot = figure$plot,
+       width = 21,
+       height = 11,
+       units = "cm",
+       dpi = 300,
+       bg = "white")
+```
+
+# Figure S9: BMI forest plot
+
+```{r}
+# Pull counts from the results table
+n_counts <- stratified_results_bmi %>%
+  distinct(study, subgroup, n) %>%
+  tidyr::unite(key, study, subgroup) %>%
+  tibble::deframe()
+
+n_swl_g1   <- n_counts["swl_<25"]
+n_swl_g2   <- n_counts["swl_25+"]
+n_raine_g1 <- n_counts["raine_<25"]
+n_raine_g2 <- n_counts["raine_25+"]
+
+# Prepare figure labels
+label_swl   <- glue::glue(
+  "SMART Work & Life (wrist vs. thigh) \n <25 kg/m\u00B2 (n={n_swl_g1}) vs 25+ kg/m\u00B2 (n={n_swl_g2})"
+)
+label_raine <- glue::glue(
+  "Raine Study Gen1 (wrist vs. hip) \n <25 kg/m\u00B2 (n={n_raine_g1}) vs 25+ kg/m\u00B2 (n={n_raine_g2})"
+)
+  
+# Create forest plot
+figure <- forest_plot(
+  setNames(list(stratified_results_bmi %>% filter(study == "swl"),
+                stratified_results_bmi %>% filter(study == "raine")),
+           c(as.character(label_swl), as.character(label_raine))),
+  col.key = "phenotype",
+  col.estimate = "corr_est",
+  col.lci = "corr_lci",
+  col.uci = "corr_uci",
+  row.labels = row_labels,
+  xlab = "r (95% CI)",
+  xlim = c(0.2, 1.0),
+  exponentiate = FALSE,
+  col.keep = "subgroup_numbered",
+  fill = "mycolour",
+  shape = "square filled",
+  data.function = "move_rows",
+  ciunder = TRUE,
+  ci.delim = ", ",
+  stroke = 0.5,
+  row.labels.heading = "Phenotype",
+  plot.margin = margin(8, 8, 2, 8, "mm"),
+  mid.space = unit(15, "mm")
+)
+
+ggsave(filename = here("output", "prepared", "figures", "Figure_S9.png"),
+       plot = figure$plot,
+       width = 21,
+       height = 11,
+       units = "cm",
+       dpi = 300,
+       bg = "white")
+```
+

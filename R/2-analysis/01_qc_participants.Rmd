@@ -1,0 +1,416 @@
+---
+title: "01_qc_participants"
+output: html_document
+author: "Charilaos Zisou"
+---
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  error = FALSE
+)
+
+rm(list=ls())
+```
+
+```{r load_dependencies}
+# Load required packages
+if (!require(pacman)) install.packages("pacman")
+pacman::p_load(here, data.table, assertthat, readr, openxlsx)
+
+# Load helper functions
+source(here("R", "2-analysis", "utils_analysis.R"))
+```
+
+```{r}
+# Initialize filenames
+swl_wrist_info_filename <- "swl_weekly_collated_wrist_actinet_20260330.csv"
+swl_thigh_info_filename <- "swl_weekly_collated_thigh_enmo_20260330.csv"
+swl_wrist_weekly_summaries_filename <- "swl_wrist_weekly_summaries.csv"
+swl_thigh_weekly_summaries_filename <- "swl_thigh_weekly_summaries.csv"
+
+raine_wrist_info_filename <- "raine_weekly_collated_wrist_actinet_20260330.csv"
+raine_hip_info_filename <- "raine_weekly_collated_hip_enmo_20260330.csv"
+raine_wrist_weekly_summaries_filename <- "raine_wrist_weekly_summaries.csv"
+raine_hip_weekly_summaries_filename <- "raine_hip_weekly_wakinghours_summaries.csv"
+
+raine_ism_ids_filename <- "raine_idle_sleep_mode_ids.txt"
+
+output_swl_qced_filename <- "swl_qced_phenotypes.csv"
+output_raine_qced_filename <- "raine_qced_phenotypes.csv"
+
+# Create output directories if they don't exist
+invisible(lapply(c(
+  here("output", "intermediate"),
+  here("output", "prepared", "tables")
+), dir.create, recursive = TRUE, showWarnings = FALSE))
+```
+
+# Load and prep SWL data
+
+```{r}
+# Load SWL data
+dat_swl_wrist_info <- data.table::fread(
+  here("output", "derived_accelerometry", swl_wrist_info_filename),
+  data.table = FALSE
+)
+
+dat_swl_thigh_info <- data.table::fread(
+  here("output", "derived_accelerometry", swl_thigh_info_filename),
+  data.table = FALSE
+)
+
+dat_swl_wrist <- data.table::fread(
+  here("output", "intermediate", swl_wrist_weekly_summaries_filename),
+  data.table = FALSE
+)
+
+dat_swl_thigh <- data.table::fread(
+  here("output", "intermediate", swl_thigh_weekly_summaries_filename),
+  data.table = FALSE
+)
+
+# Prep info relevant to QC
+dat_swl_wrist_info <- prepare_info(dat_swl_wrist_info)
+dat_swl_thigh_info <- prepare_info(dat_swl_thigh_info)
+
+# Merge into one data frame
+dat_swl_wrist <- merge(dat_swl_wrist_info,
+                       dat_swl_wrist,
+                       by = c("filename", "pid"),
+                       all = TRUE)
+
+dat_swl_thigh <- merge(dat_swl_thigh_info,
+                       dat_swl_thigh, 
+                       by = c("filename", "pid"),
+                       all = TRUE)
+
+rm(dat_swl_wrist_info, dat_swl_thigh_info)
+
+# If PID duplicated, keep one with later dates of wear
+# (In some cases, the activPAL device malfunctioned and participants were
+# invited to repeat measurements using both devices.)
+dat_swl_wrist <- fix_duplicates(dat_swl_wrist, dat_swl_thigh)
+dat_swl_thigh <- fix_duplicates(dat_swl_thigh, dat_swl_wrist)
+
+# Sanity checks
+assert_that(!anyNA(dat_swl_wrist$calibration_ok),
+            msg = "Some rows in dat_swl_wrist contain NA calibration_ok values")
+
+assert_that(!anyNA(dat_swl_thigh$calibration_ok),
+            msg = "Some rows in dat_swl_thigh contain NA calibration_ok values")
+```
+
+# Load and prep Raine data
+
+```{r}
+# Load Raine data
+dat_raine_wrist_info <- data.table::fread(
+  here("output", "derived_accelerometry", raine_wrist_info_filename),
+  data.table = FALSE
+)
+
+dat_raine_hip_info <- data.table::fread(
+  here("output", "derived_accelerometry", raine_hip_info_filename),
+  data.table = FALSE
+)
+
+dat_raine_wrist <- data.table::fread(
+  here("output", "intermediate", raine_wrist_weekly_summaries_filename),
+  data.table = FALSE
+)
+
+dat_raine_hip <- data.table::fread(
+  here("output", "intermediate", raine_hip_weekly_summaries_filename),
+  data.table = FALSE
+)
+
+# Prep info relevant to QC
+dat_raine_wrist_info <- prepare_info(dat_raine_wrist_info)
+dat_raine_hip_info <- prepare_info(dat_raine_hip_info)
+
+# Merge into one data frame
+dat_raine_wrist <- merge(dat_raine_wrist_info,
+                         dat_raine_wrist,
+                         by = c("filename", "pid"),
+                         all = TRUE)
+
+dat_raine_hip <- merge(dat_raine_hip_info,
+                       dat_raine_hip,
+                       by = c("filename", "pid"),
+                       all = TRUE)
+
+rm(dat_raine_wrist_info, dat_raine_hip_info)
+
+# If PID duplicated, keep one with later dates of wear
+dat_raine_wrist <- fix_duplicates(dat_raine_wrist, dat_raine_hip)
+dat_raine_hip <- fix_duplicates(dat_raine_hip, dat_raine_wrist)
+
+# Load idle sleep mode IDs
+ism_ids <- readLines(here("output", 
+                          "derived_accelerometry", 
+                          raine_ism_ids_filename))
+ism_ids <- sub("_.*", "", ism_ids)
+dat_raine_wrist <- dat_raine_wrist %>%
+  mutate(is_ism = if_else(pid %in% ism_ids, 1, 0))
+
+# Sanity checks
+assert_that(!anyNA(dat_raine_wrist$calibration_ok),
+            msg = "Some rows in dat_raine_wrist contain NA calibration_ok values")
+
+assert_that(!anyNA(dat_raine_hip$calibration_ok),
+            msg = "Some rows in dat_raine_hip contain NA calibration_ok values")
+```
+
+# Make quality-related exclusions
+
+## SWL
+
+```{r}
+# Initialise tables to record participant exclusions
+tab_exc_swl_wrist <- data.frame(reason = "Starting cohort",
+                                n_remaining = nrow(dat_swl_wrist),
+                                n_excluded = NA,
+                                stringsAsFactors = FALSE)
+
+tab_exc_swl_thigh <- data.frame(reason = "Starting cohort",
+                                n_remaining = nrow(dat_swl_thigh),
+                                n_excluded = NA,
+                                stringsAsFactors = FALSE)
+
+# Exclude participants whose device could not be calibrated
+res <- track_exclusions(tab_exc_swl_wrist, 
+                        dat_swl_wrist, 
+                        calibration_ok != 1, 
+                        "Failed calibration")
+tab_exc_swl_wrist <- res$tab
+dat_swl_wrist <- res$df
+
+res <- track_exclusions(tab_exc_swl_thigh, 
+                        dat_swl_thigh, 
+                        calibration_ok != 1, 
+                        "Failed calibration")
+tab_exc_swl_thigh <- res$tab
+dat_swl_thigh <- res$df
+
+# Exclude participants with insufficient wear time
+res <- track_exclusions(tab_exc_swl_wrist, 
+                        dat_swl_wrist, 
+                        wear_time_hours < 72 | covers_24h_ok != 1 | is.na(num_days), 
+                        "Insufficient wear time")
+tab_exc_swl_wrist <- res$tab
+dat_swl_wrist <- res$df
+
+res <- track_exclusions(tab_exc_swl_thigh, 
+                        dat_swl_thigh,
+                        num_days < 3 | is.na(num_days),
+                        "Insufficient wear time")
+tab_exc_swl_thigh <- res$tab
+dat_swl_thigh <- res$df
+
+# Exclude participants with implausible values
+res <- track_exclusions(tab_exc_swl_wrist, 
+                        dat_swl_wrist, 
+                        overall_activity_mean > 100, 
+                        "Implausible values")
+tab_exc_swl_wrist <- res$tab
+dat_swl_wrist <- res$df
+
+res <- track_exclusions(tab_exc_swl_thigh,
+                        dat_swl_thigh,
+                        overall_activity_mean > 100, # Just being conservative
+                        "Implausible values")
+tab_exc_swl_thigh <- res$tab
+dat_swl_thigh <- res$df
+
+# Merge SWL wrist and thigh data frames
+dat_swl <- merge(dat_swl_wrist,
+                 dat_swl_thigh,
+                 by = "pid",
+                 all = FALSE,
+                 suffixes = c("_wrist", "_thigh"))
+
+# Print results
+print(tab_exc_swl_wrist, row.names = FALSE)
+print(tab_exc_swl_thigh, row.names = FALSE)
+cat("\nFinal paired valid data: n =", nrow(dat_swl), "\n")
+
+# Sanity check
+assert_that(!anyNA(dat_swl), msg = "Some columns in dat_swl contain NA values")
+```
+
+## Raine Study Gen1
+
+```{r}
+# Initialise tables to record participant exclusions
+tab_exc_raine_wrist <- data.frame(reason = "Starting cohort",
+                                  n_remaining = nrow(dat_raine_wrist),
+                                  n_excluded = NA,
+                                  stringsAsFactors = FALSE)
+
+tab_exc_raine_hip <- data.frame(reason = "Starting cohort",
+                                n_remaining = nrow(dat_raine_hip),
+                                n_excluded = NA,
+                                stringsAsFactors = FALSE)
+
+# Exclude participants with idle sleep mode activated
+res <- track_exclusions(tab_exc_raine_wrist, 
+                        dat_raine_wrist, 
+                        is_ism == 1, 
+                        "Idle sleep mode")
+tab_exc_raine_wrist <- res$tab
+dat_raine_wrist <- res$df
+
+# Exclude participants whose device could not be calibrated
+res <- track_exclusions(tab_exc_raine_wrist, 
+                        dat_raine_wrist, 
+                        calibration_ok == 0, 
+                        "Failed calibration")
+tab_exc_raine_wrist <- res$tab
+dat_raine_wrist <- res$df
+
+res <- track_exclusions(tab_exc_raine_hip, 
+                        dat_raine_hip, 
+                        calibration_ok == 0, 
+                        "Failed calibration")
+tab_exc_raine_hip <- res$tab
+dat_raine_hip <- res$df
+
+
+# Exclude participants with insufficient wear time
+res <- track_exclusions(tab_exc_raine_wrist, 
+                        dat_raine_wrist, 
+                        wear_time_hours < 72 | covers_24h_ok != 1 | is.na(num_days), 
+                        "Insufficient wear time")
+tab_exc_raine_wrist <- res$tab
+dat_raine_wrist <- res$df
+
+res <- track_exclusions(tab_exc_raine_hip, 
+                        dat_raine_hip,
+                        num_days < 3 | is.na(num_days),
+                        "Insufficient wear time")
+tab_exc_raine_hip <- res$tab
+dat_raine_hip <- res$df
+
+# Exclude participants with implausible values
+res <- track_exclusions(tab_exc_raine_wrist, 
+                        dat_raine_wrist, 
+                        overall_activity_mean > 100 | mvpa_mean > 6, # MVPA thresh because Visual inspection revealed problematic file
+                        "Implausible values")
+tab_exc_raine_wrist <- res$tab
+dat_raine_wrist <- res$df
+
+res <- track_exclusions(tab_exc_raine_hip,
+                        dat_raine_hip,
+                        overall_activity_mean > 70 | overall_activity_counts_mean > 2690 | mvpa_mean > 6, # MVPA thresh because Visual inspection revealed problematic file
+                        "Implausible values")
+tab_exc_raine_hip <- res$tab
+dat_raine_hip <- res$df
+
+# Merge Raine wrist and hip data frames
+dat_raine <- merge(dat_raine_wrist,
+                   dat_raine_hip,
+                   by = "pid",
+                   all = FALSE,
+                   suffixes = c("_wrist", "_hip"))
+
+# Print results
+print(tab_exc_raine_wrist, row.names = FALSE)
+print(tab_exc_raine_hip, row.names = FALSE)
+cat("\nFinal paired valid data: n =", nrow(dat_raine), "\n")
+
+# Sanity check
+assert_that(!anyNA(dat_raine), 
+            msg = "Some columns in dat_raine contain NA values")
+```
+
+# Save output files
+
+```{r}
+# Save data frames to CSV files
+out_path <- here("output", "intermediate", output_swl_qced_filename)
+write_csv(dat_swl, out_path)
+cat("QCed SWL data saved to:", out_path, "\n")
+
+out_path <- here("output", "intermediate", output_raine_qced_filename)
+write_csv(dat_raine, out_path)
+cat("QCed Raine data saved to:", out_path, "\n")
+```
+
+```{r}
+# Initialise helper variables
+tabs <- list(tab_exc_swl_wrist  = tab_exc_swl_wrist,
+             tab_exc_swl_thigh  = tab_exc_swl_thigh,
+             tab_exc_raine_wrist= tab_exc_raine_wrist,
+             tab_exc_raine_hip  = tab_exc_raine_hip)
+
+titles <- c("SWL wrist-worn Axivity AX3",
+            "SWL thigh-worn activPAL3",
+            "Raine Study Gen1 wrist-worn ActiGraph GT3X+",
+            "Raine Study Gen1 hip-worn ActiGraph GT3X+")
+
+start_cols <- c(1, 5, 9, 13)
+
+# Create workbook and worksheet
+wb <- createWorkbook()
+addWorksheet(wb, "Exclusion Tables")
+
+# Write titles (row 1) and tables (from row 2)
+for (i in seq_along(tabs)) {
+  sc <- start_cols[i]
+  writeData(wb, 
+            sheet = 1, 
+            x = titles[i], 
+            startCol = sc, 
+            startRow = 1)
+  writeData(wb, 
+            sheet = 1, 
+            x = tabs[[i]], 
+            startCol = sc, 
+            startRow = 2, 
+            rowNames = FALSE)
+}
+
+# Make titles bold
+title_style <- createStyle(textDecoration = "bold")
+addStyle(wb, sheet = 1, style = title_style,
+         rows = 1, cols = start_cols, gridExpand = TRUE)
+
+# Auto-adjust column widths for each block
+for (sc in start_cols) {
+  setColWidths(wb, sheet = 1, cols = sc:(sc + 2), widths = "auto")
+}
+
+# Add paired valid participant summary at bottom
+summary_row <- max(vapply(tabs, nrow, integer(1))) + 5
+summary_df <- data.frame(
+  Study = c("SWL", "Raine Study Gen1"),
+  Paired_valid_participants = c(nrow(dat_swl), nrow(dat_raine)),
+  stringsAsFactors = FALSE
+)
+writeData(wb,
+          sheet = 1,
+          x = "Paired valid participants summary",
+          startCol = 1,
+          startRow = summary_row - 1)
+addStyle(wb,
+         sheet = 1,
+         style = title_style,
+         rows = summary_row - 1,
+         cols = 1,
+         gridExpand = TRUE)
+writeData(wb,
+          sheet = 1,
+          x = summary_df,
+          startCol = 1,
+          startRow = summary_row)
+
+# Save workbook
+out_path <- here("output", "prepared", "tables", "exclusion_table.xlsx")
+saveWorkbook(wb, out_path, overwrite = TRUE)
+cat("Exclusion tables saved to:", out_path, "\n")
+```

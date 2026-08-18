@@ -1,0 +1,422 @@
+---
+title: "04_sensitivity_analyses"
+output: html_document
+author: "Charilaos Zisou"
+---
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  error = FALSE
+)
+
+rm(list=ls())
+```
+
+```{r load_dependencies}
+# Load required packages
+if (!require(pacman)) install.packages("pacman")
+pacman::p_load(
+  here,
+  data.table,
+  dplyr,
+  tidyr,
+  readr,
+  grid,
+  gridExtra,
+  officer,
+  flextable,
+  purrr
+)
+
+# Load helper functions
+source(here("R", "2-analysis", "utils_analysis.R"))
+source(here("R", "2-analysis", "utils_display.R"))
+```
+
+```{r}
+# Initialize filenames
+swl_qced_phenotypes_filename <- "swl_qced_phenotypes.csv"
+raine_qced_phenotypes_filename <- "raine_qced_phenotypes.csv"
+
+swl_wrist_weekly_summaries_filename <- "swl_wrist_weekly_summaries.csv"
+swl_thigh_weekly_summaries_filename <- "swl_thigh_weekly_summaries.csv"
+raine_wrist_weekly_summarie_filename <- "raine_wrist_weekly_summaries.csv"
+raine_hip_weekly_summaries_filename <- "raine_hip_weekly_summaries.csv"
+
+# Create output directories if they don't exist
+invisible(lapply(c(
+  here("output", "prepared", "tables"),
+  here("output", "prepared", "figures")
+), dir.create, recursive = TRUE, showWarnings = FALSE))
+```
+
+# Load and prep QCed data
+
+```{r}
+# Load physical activity data
+dat_swl_qced <- data.table::fread(
+  here("output", "intermediate", swl_qced_phenotypes_filename),
+  data.table = FALSE
+)
+
+dat_raine_qced <- data.table::fread(
+  here("output", "intermediate", raine_qced_phenotypes_filename),
+  data.table = FALSE
+)
+
+# Convert MVPA from hours to mins
+dat_swl_qced <- dat_swl_qced %>%
+  mutate(across(starts_with("mvpa"), ~ .x * 60))
+
+dat_raine_qced <- dat_raine_qced %>%
+  mutate(across(starts_with("mvpa"), ~ .x * 60))
+```
+
+# Table S3: Sensitivity correlations
+
+## Repeat main results
+
+```{r}
+phenotypes <- c("overall_activity_mean",
+                "steps_mean",
+                "cadence_peak1_mean",
+                "mvpa_mean",
+                "lipa_mean",
+                "sedentary_mean")
+
+corr_results_main <- data.frame(study = character(),
+                                phenotype = character(),
+                                corr = character(),
+                                stringsAsFactors = FALSE)
+
+for (phenotype in phenotypes) {
+  # Calculate correlations for each study
+  corr_swl <- calculate_corr(dat_swl_qced,
+                             paste0(phenotype, "_wrist"),
+                             paste0(phenotype, "_thigh"),
+                             is_skewed = startsWith(phenotype, "mvpa"))
+  
+  corr_raine <- calculate_corr(dat_raine_qced, 
+                               paste0(phenotype, "_wrist"),
+                               paste0(phenotype, "_hip"),
+                               is_skewed = startsWith(phenotype, "mvpa"))
+  
+  # Collate results
+  corr_results_main <- rbind(
+    corr_results_main,
+    data.frame(study = "swl",
+               phenotype = phenotype,
+               corr = format_est(corr_swl$corr_est, 
+                                 corr_swl$corr_lci,
+                                 corr_swl$corr_uci,
+                                 sep="-"),
+               stringsAsFactors = FALSE),
+    data.frame(study = "raine",
+               phenotype = phenotype,
+               corr = format_est(corr_raine$corr_est, 
+                                 corr_raine$corr_lci,
+                                 corr_raine$corr_uci,
+                                 sep="-"),
+               stringsAsFactors = FALSE)
+    )
+  
+}
+```
+
+## Stringent quality control
+
+```{r}
+# Remove participants with imperfect wear
+dat_swl_qced_stringent <- dat_swl_qced %>%
+  filter(num_days_wrist == 8 & num_days_thigh == 8)
+
+dat_raine_qced_stringent <- dat_raine_qced %>%
+  filter(num_days_wrist == 8 & num_days_hip == 8)
+
+phenotypes <- c("overall_activity_mean",
+                "steps_mean",
+                "cadence_peak1_mean",
+                "mvpa_mean",
+                "lipa_mean",
+                "sedentary_mean")
+
+# Get results
+corr_results_qc <- data.frame(study = character(),
+                              phenotype = character(),
+                              corr = character(),
+                              stringsAsFactors = FALSE)
+
+for (phenotype in phenotypes) {
+  
+  # Calculate correlations for each study
+  corr_swl <- calculate_corr(dat_swl_qced_stringent,
+                             paste0(phenotype, "_wrist"),
+                             paste0(phenotype, "_thigh"),
+                             is_skewed = startsWith(phenotype, "mvpa"))
+    
+  corr_raine <- calculate_corr(dat_raine_qced_stringent, 
+                               paste0(phenotype, "_wrist"),
+                               paste0(phenotype, "_hip"),
+                               is_skewed = startsWith(phenotype, "mvpa"))
+  
+  # Collate results
+  corr_results_qc <- rbind(
+    corr_results_qc,
+    data.frame(study = "swl",
+               phenotype = phenotype,
+               corr = format_est(corr_swl$corr_est, 
+                                 corr_swl$corr_lci,
+                                 corr_swl$corr_uci,
+                                 sep="-"),
+               stringsAsFactors = FALSE),
+    data.frame(study = "raine",
+               phenotype = phenotype,
+               corr = format_est(corr_raine$corr_est, 
+                                 corr_raine$corr_lci,
+                                 corr_raine$corr_uci,
+                                 sep="-"),
+               stringsAsFactors = FALSE)
+    )
+}
+```
+
+## Proportion of wear time
+
+```{r}
+phenos_to_transform <- c("overall_activity_mean",
+                         "steps_mean",
+                         "mvpa_mean",
+                         "lipa_mean",
+                         "sedentary_mean")
+
+# Create wear_time_daily variable
+dat_swl_qced$wear_time_daily_thigh <-
+  dat_swl_qced$wear_time_hours_thigh / dat_swl_qced$num_days_thigh
+
+dat_raine_qced$wear_time_daily_hip <-
+  dat_raine_qced$wear_time_hours_hip / dat_raine_qced$num_days_hip
+
+# Express thigh/hip phenotypes as proportions of wear time
+pat_swl <- paste0("^(", paste(phenos_to_transform, collapse = "|"), ")_thigh$")
+pat_raine <- paste0("^(", paste(phenos_to_transform, collapse = "|"), ")_hip$")
+
+dat_swl_proportions <- dat_swl_qced %>%
+  mutate(across(matches(pat_swl), ~ . * 24 / wear_time_daily_thigh))
+
+dat_raine_proportions <- dat_raine_qced %>%
+  mutate(across(matches(pat_raine), ~ . * 16 / wear_time_daily_hip))
+
+# Get results
+corr_results_proportions <- data.frame(study = character(),
+                                       phenotype = character(),
+                                       corr = character(),
+                                       stringsAsFactors = FALSE)
+
+phenotypes <- c("overall_activity_mean",
+                "steps_mean",
+                "cadence_peak1_mean",
+                "mvpa_mean",
+                "lipa_mean",
+                "sedentary_mean")
+
+for (phenotype in phenotypes) {
+  # Calculate correlations for each study
+  corr_swl <- calculate_corr(dat_swl_proportions,
+                             paste0(phenotype, "_wrist"),
+                             paste0(phenotype, "_thigh"),
+                             is_skewed = startsWith(phenotype, "mvpa"))
+    
+  corr_raine <- calculate_corr(dat_raine_proportions, 
+                               paste0(phenotype, "_wrist"),
+                               paste0(phenotype, "_hip"),
+                               is_skewed = startsWith(phenotype, "mvpa"))
+  
+  # Collate results
+  corr_results_proportions <- rbind(
+    corr_results_proportions,
+    data.frame(study = "swl",
+               phenotype = phenotype,
+               corr = format_est(corr_swl$corr_est, 
+                                 corr_swl$corr_lci,
+                                 corr_swl$corr_uci,
+                                 sep="-"),
+               stringsAsFactors = FALSE),
+    data.frame(study = "raine",
+               phenotype = phenotype,
+               corr = format_est(corr_raine$corr_est, 
+                                 corr_raine$corr_lci,
+                                 corr_raine$corr_uci,
+                                 sep="-"),
+               stringsAsFactors = FALSE)
+    )
+}
+```
+
+## Median aggregation
+
+```{r}
+phenotypes <- c("overall_activity_median",
+                "steps_median",
+                "cadence_peak1_median",
+                "mvpa_median",
+                "lipa_median",
+                "sedentary_median")
+
+corr_results_median <- data.frame(study = character(),
+                                  phenotype = character(),
+                                  corr = character(),
+                                  stringsAsFactors = FALSE)
+
+for (phenotype in phenotypes) {
+  # Calculate correlations for each study
+  corr_swl <- calculate_corr(dat_swl_qced,
+                             paste0(phenotype, "_wrist"),
+                             paste0(phenotype, "_thigh"),
+                             is_skewed = startsWith(phenotype, "mvpa"))
+    
+  corr_raine <- calculate_corr(dat_raine_qced, 
+                               paste0(phenotype, "_wrist"),
+                               paste0(phenotype, "_hip"),
+                               is_skewed = startsWith(phenotype, "mvpa"))
+  
+  # Collate results
+  corr_results_median <- rbind(
+    corr_results_median,
+    data.frame(study = "swl",
+               phenotype = phenotype,
+               corr = format_est(corr_swl$corr_est, 
+                                 corr_swl$corr_lci,
+                                 corr_swl$corr_uci,
+                                 sep="-"),
+               stringsAsFactors = FALSE),
+    data.frame(study = "raine",
+               phenotype = phenotype,
+               corr = format_est(corr_raine$corr_est, 
+                                 corr_raine$corr_lci,
+                                 corr_raine$corr_uci,
+                                 sep="-"),
+               stringsAsFactors = FALSE)
+    )
+}
+```
+
+## Collate results into table
+
+```{r}
+# Change names of columns
+names(corr_results_main)[names(corr_results_main) == "corr"] <- "corr_main"
+names(corr_results_qc)[names(corr_results_qc) == "corr"] <- "corr_qc"
+names(corr_results_median)[names(corr_results_median) == "corr"] <- "corr_median"
+names(corr_results_proportions)[names(corr_results_proportions) == "corr"] <- "corr_proportions"
+
+# Remove string suffix
+corr_results_main <- corr_results_main %>%
+  mutate(phenotype = sub("_(mean|median)$", "", phenotype))
+corr_results_qc <- corr_results_qc %>%
+  mutate(phenotype = sub("_(mean|median)$", "", phenotype))
+corr_results_median <- corr_results_median %>%
+  mutate(phenotype = sub("_(mean|median)$", "", phenotype))
+corr_results_proportions <- corr_results_proportions %>%
+  mutate(phenotype = sub("_(mean|median)$", "", phenotype))
+
+# Merge all dataframes
+corr_results_sensitivity <- list(corr_results_main,
+                                corr_results_qc,
+                                corr_results_median,
+                                corr_results_proportions) %>%
+  purrr::reduce(inner_join, by = c("study", "phenotype")) %>%
+  mutate(study = factor(study, levels = c("swl", "raine"))) %>%
+  arrange(study)
+
+# Save table to .docx
+ft <- regulartable(corr_results_sensitivity) %>%
+  fontsize(size = 9, part = "all") %>%
+  set_table_properties(layout = "fixed", width = 1) %>%
+  autofit()
+
+doc <- read_docx() %>%
+  body_add_flextable(ft)
+
+print(doc, target = here("output", "prepared", "tables", "Table_S3.docx"))
+```
+
+# Figure S10: Scatter plots with 24h hip-based phenotypes
+
+```{r}
+# Load data
+dat_raine_hip_24h <- data.table::fread(
+  here("output", "intermediate", "raine_hip_weekly_summaries.csv"),
+  data.table = FALSE
+)
+
+# Select the same participants for 24h scatter plots
+dat_raine_hip_24h <- dat_raine_hip_24h %>%
+  rename_with(~ paste0(.x, "_hip"), -pid) %>%
+  semi_join(dat_raine_qced, by = "filename_hip") %>%
+  mutate(across(starts_with("mvpa"), ~ .x * 60))
+
+dat_raine_qced_24h <- dat_raine_qced %>%
+  select(-ends_with("_hip")) %>%
+  left_join(dat_raine_hip_24h, by = "pid")
+
+# Prepare individual scatter plots for Raine
+plot1 <- make_scatter_plot(dat_raine_qced_24h,
+                           phenotype = 'overall_activity_mean',
+                           title = 'Overall activity',
+                           phenotype_units = 'mg/day',
+                           axes_lims = c(0, 60))
+
+plot2 <- make_scatter_plot(dat_raine_qced_24h,
+                           phenotype = 'steps_mean',
+                           title = 'Step count',
+                           phenotype_units = 'steps/day',
+                           axes_lims = c(0, 30000))
+
+plot3 <- make_scatter_plot(dat_raine_qced_24h,
+                           phenotype = 'cadence_peak1_mean',
+                           title = 'Peak 1-min cadence',
+                           phenotype_units = 'steps/minute',
+                           axes_lims = c(40, 180))
+
+plot4 <- make_scatter_plot(dat_raine_qced_24h,
+                           phenotype = 'mvpa_mean',
+                           title = 'MVPA',
+                           phenotype_units = 'minutes/day',
+                           skewed_phenotype = TRUE,
+                           axes_lims = c(0, 200))
+
+plot5 <- make_scatter_plot(dat_raine_qced_24h,
+                           phenotype = 'lipa_mean',
+                           title = 'Light physical activity',
+                           phenotype_units = 'hours/day',
+                           axes_lims = c(0, 12))
+
+plot6 <- make_scatter_plot(dat_raine_qced_24h,
+                           phenotype = 'sedentary_mean',
+                           title = 'Sedentary behaviour',
+                           phenotype_units = 'hours/day',
+                           axes_lims = c(0, 20))
+
+# Combine all Raine plots
+figure <- arrangeGrob(ggplotGrob(plot1),
+                       ggplotGrob(plot2),
+                       ggplotGrob(plot3),
+                       ggplotGrob(plot4),
+                       ggplotGrob(plot5),
+                       ggplotGrob(plot6),
+                       ncol = 3)
+
+# Save figure to file
+ggsave(filename = here("output", "prepared", "figures", "Figure_S10.png"),
+       plot = figure,
+       width = 21,
+       height = 14,
+       units = "cm",
+       dpi = 300,
+       bg = "white")
+```

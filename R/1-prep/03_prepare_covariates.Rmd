@@ -1,0 +1,261 @@
+---
+title: "03_prepare_covariates"
+output: html_document
+author: "Charilaos Zisou"
+---
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  error = FALSE
+)
+
+rm(list=ls())
+```
+
+```{r load_dependencies}
+# Load required packages 
+if (!require(pacman)) install.packages("pacman")
+pacman::p_load(here, data.table, readr, readxl, forcats, dplyr)
+```
+
+```{r}
+# Initialize filenames
+swl_demographics_filename <- "swal_demographics_cleaned.csv"
+raine_demographics_filename <- "SLE0485-D1_data_Gen1-26_New_ID.csv"
+
+output_swl_demographics_filename <- "swl_demographics.csv"
+output_raine_demographics_filename <- "raine_demographics.csv"
+
+# Create output directories if they don't exist
+invisible(lapply(c(
+  here("output", "intermediate")
+), dir.create, recursive = TRUE, showWarnings = FALSE))
+```
+
+# Prepare SWL demographics
+
+```{r}
+# Load SWL demographics and merge into one DataFrame
+swl_demographics <- read_csv(
+  here("output", "demographics", swl_demographics_filename),
+  show_col_types = FALSE
+  )
+
+# Rename PID, sex, ethnicity, BMI, and self-rated health
+swl_demographics <- swl_demographics %>%
+  rename(pid = label,
+         sex = gender,
+         bmi = bmi_0m)
+
+# Prep education
+swl_demographics <- swl_demographics %>%
+  mutate(
+    education = case_when(
+      grepl("gcse/o level", education_0m, ignore.case = TRUE) ~ "Basic education",
+      grepl("a level|as level|other", education_0m, ignore.case = TRUE) ~ "Further education",
+      grepl("degree", education_0m, ignore.case = TRUE) ~ "University degree",
+    )
+  )
+
+# Prep employment status
+swl_demographics$employment <- "Employed"
+
+# Prep smoking status
+swl_demographics <- swl_demographics %>%
+  mutate(
+    smoking = forcats::fct_recode(
+      smoking,
+      "Current" = "Current",
+      "Former"  = "Ex-Smoker",
+      "Never"   = "Never Smoked"
+    )
+  )
+
+# Prep drinking status
+swl_demographics <- swl_demographics %>%
+  mutate(drinking = case_when(
+    alcohol == "No" ~ "Non-drinker",
+    alcohol == "Yes" ~ "Drinker"
+  ))
+
+# BMI
+swl_demographics$bmi_3gp <- cut(
+  swl_demographics$bmi,
+  breaks = c(-Inf, 25, 30, Inf),
+  labels = c("<24.9", "25-29.9", "30+"),
+  right = FALSE
+)
+
+# Prep prevalent CVD
+cvd_cols <- c(
+  "angina_0m",
+  "cad_0m",
+  "mi_0m",
+  "cabg_angioplsty_0m",
+  "tia_0m",
+  "pad_claud_0m",
+  "cardiacinsuff_0m"
+  )
+
+swl_demographics <- swl_demographics %>%
+  mutate(
+    prevalent_cvd = case_when(
+      rowSums(!is.na(across(all_of(cvd_cols)))) == 0 ~ NA_character_,
+      rowSums(across(all_of(cvd_cols)) == "Yes", na.rm = TRUE) > 0 ~ "Yes",
+      TRUE ~ "No")
+    )
+
+# Keep selected columns
+cols_to_keep <-
+  c(
+    'pid',
+    'age',
+    'sex',
+    'education',
+    'employment',
+    'smoking',
+    'drinking',
+    'bmi',
+    'bmi_3gp',
+    'prevalent_cvd'
+  )
+
+swl_demographics <- swl_demographics[, cols_to_keep]
+```
+
+# Prepare Raine demographics
+
+```{r}
+# Load Raine demographics
+raine_demographics <- data.table::fread(
+  here("output", "demographics", raine_demographics_filename),
+  data.table = FALSE
+  )
+
+# Rename pid, age, and BMI columns
+raine_demographics <- raine_demographics %>%
+  dplyr::rename(pid = Gen1_ID,
+                age = G126_Age,
+                bmi = G126_BMI) %>%
+  select(-V1)
+
+# Prep sex 
+raine_demographics <- raine_demographics %>%
+  mutate(
+    sex = factor(
+      G126_SEX,
+      levels = c(0, 1),
+      labels = c("Male", "Female")
+    )
+  )
+
+# Prep education
+raine_demographics <- raine_demographics %>%
+  mutate(
+    education = case_when(
+      G126_ED33 == 0 ~ "No education",
+      G126_ED33 %in% c(1, 2) ~ "Basic education",
+      G126_ED33 %in% c(3, 4, 5) ~ "Further education",
+      G126_ED33 %in% c(6, 7) ~ "University degree"
+    )
+  )
+
+# Prep employment status 
+raine_demographics <- raine_demographics %>%
+  mutate(employment = factor(if_else(
+    G126_YWRK %in% c(0, 1, 2, 9), "Employed", "Not employed"
+  )))
+
+# Prep smoking
+raine_demographics <- raine_demographics %>%
+  mutate(
+    smoking = case_when(
+      G126_SM1 == 0 ~ "Never",
+      G126_SM1 == 1 & G126_SM2 == 0 ~ "Former",
+      G126_SM2 == 1 ~ "Current",
+      TRUE ~ NA_character_
+    )
+  )
+
+# Prep drinking
+drinking_cols <- c("G126_DK63",
+                   "G126_DK64",
+                   "G126_DK65",
+                   "G126_DK66",
+                   "G126_DK67",
+                   "G126_DK68")
+raine_demographics <- raine_demographics %>%
+  mutate(
+    drinking = case_when(
+      rowSums(!is.na(across(all_of(drinking_cols)))) == 0 ~ NA_character_,
+      rowSums(across(all_of(drinking_cols)) > 0, na.rm = TRUE) > 0 ~ "Drinker",
+      TRUE ~ "Non-drinker"
+    )
+  )
+
+# BMI
+raine_demographics$bmi_3gp <- cut(
+  raine_demographics$bmi,
+  breaks = c(-Inf, 25, 30, Inf),
+  labels = c("<24.9", "25-29.9", "30+"),
+  right = FALSE
+)
+
+# Prep prior CVD
+cvd_event_cols <- c(
+  "G126_CVD1",  # Angina
+  "G126_CVD2",  # Claudication
+  "G126_CVD5",  # Pacemaker
+  "G126_CVD6",  # MI / heart attack
+  "G126_CVD7",  # TIA
+  "G126_CVD8",  # Stroke
+  "G126_CVD9",  # Carotid surgery
+  "G126_CVD10", # Coronary angioplasty / stent
+  "G126_CVD11"  # Coronary bypass
+)
+cvd_all_cols <- c(cvd_event_cols, "G126_CVD3", "G126_CVD4", "G126_CVD12")
+
+raine_demographics <- raine_demographics %>%
+  mutate(
+    prevalent_cvd = case_when(
+      rowSums(!is.na(across(all_of(cvd_all_cols)))) == 0 ~ NA_character_,
+      rowSums(across(all_of(cvd_event_cols)) == 1, na.rm = TRUE) > 0 ~ "Yes",
+      TRUE ~ "No"
+    )
+  )
+
+# Keep selected columns
+cols_to_keep <-
+  c(
+    'pid',
+    'age',
+    'sex',
+    'education',
+    'employment',
+    'smoking',
+    'drinking',
+    'bmi',
+    'bmi_3gp',
+    'prevalent_cvd'
+  )
+
+raine_demographics <- raine_demographics[, cols_to_keep]
+```
+
+# Save output files
+
+```{r}
+# Save dataframes to CSV files
+out_path <- here("output", "intermediate", output_swl_demographics_filename)
+write_csv(swl_demographics, out_path)
+cat("SWL demographics saved to:", out_path, "\n")
+
+out_path <- here("output", "intermediate", output_raine_demographics_filename)
+write_csv(raine_demographics, out_path)
+cat("Raine demographics saved to:", out_path, "\n")
+```

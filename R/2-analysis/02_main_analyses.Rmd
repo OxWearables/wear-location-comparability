@@ -1,0 +1,865 @@
+---
+title: "02_main_analyses"
+output: html_document
+author: "Charilaos Zisou"
+---
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  error = FALSE
+)
+
+rm(list=ls())
+```
+
+```{r load_dependencies}
+# Load required packages
+if (!require(pacman)) install.packages("pacman")
+pacman::p_load(here,
+               data.table,
+               dplyr,
+               tidyr,
+               gtsummary,
+               grid,
+               gridExtra,
+               gt,
+               ckbplotr,
+               purrr)
+
+# Load helper functions
+source(here("R", "2-analysis", "utils_analysis.R"))
+source(here("R", "2-analysis", "utils_display.R"))
+```
+
+```{r}
+# Initialise filenames
+swl_qced_phenotypes_filename <- "swl_qced_phenotypes.csv"
+raine_qced_phenotypes_filename <- "raine_qced_phenotypes.csv"
+
+swl_demographics_filename <- "swl_demographics.csv"
+raine_demographics_filename <- "raine_demographics.csv"
+
+# Create output directories if they don't exist
+invisible(lapply(c(
+  here("output", "prepared", "tables"),
+  here("output", "prepared", "figures")
+), dir.create, recursive = TRUE, showWarnings = FALSE))
+```
+
+# Load data
+
+```{r}
+# Load physical activity data
+dat_swl_qced <- data.table::fread(
+  here("output", "intermediate", swl_qced_phenotypes_filename),
+  data.table = FALSE
+)
+
+dat_raine_qced <- data.table::fread(
+  here("output", "intermediate", raine_qced_phenotypes_filename),
+  data.table = FALSE
+)
+
+# Load demographics data
+swl_demographics <- data.table::fread(
+  here("output", "intermediate", swl_demographics_filename),
+  data.table = FALSE
+)
+
+raine_demographics <- data.table::fread(
+  here("output", "intermediate", raine_demographics_filename),
+  data.table = FALSE
+)
+
+# Convert MVPA from hours to mins
+dat_swl_qced <- dat_swl_qced %>%
+  mutate(across(starts_with("mvpa"), ~ .x * 60))
+
+dat_raine_qced <- dat_raine_qced %>%
+  mutate(across(starts_with("mvpa"), ~ .x * 60))
+
+# Convert wear time from total hours to daily hours
+dat_swl_qced   <- add_daily_wear(dat_swl_qced)
+dat_raine_qced <- add_daily_wear(dat_raine_qced)
+```
+
+# Main Tables
+
+## Table 1: Participant characteristics
+
+```{r}
+# Left-join from QCed participant list so every QCed participant has a row,
+# even if absent from the demographics file (missing demographics → NA)
+demo_cols <- c("age", "sex", "employment", "education",
+               "bmi_3gp", "prevalent_cvd")  
+
+swl_demographics <- dat_swl_qced %>%
+  select(pid) %>%
+  left_join(swl_demographics, by = "pid") %>%
+  select(all_of(demo_cols)) %>%
+  mutate(study = "SMART Work & Life")
+
+raine_demographics <- dat_raine_qced %>%
+  select(pid) %>%
+  left_join(raine_demographics, by = "pid") %>%
+  select(all_of(demo_cols)) %>%
+  mutate(study = "Raine Study Gen1")
+
+combined_demographics <- bind_rows(swl_demographics, raine_demographics) %>%
+  mutate(sex = factor(sex, levels = c("Male", "Female")),
+         education = factor(education, 
+                            levels = c("No education",
+                                       "Basic education",
+                                       "Further education",
+                                       "University degree")),
+         employment = factor(employment,
+                             levels = c("Not employed", "Student", "Employed")),
+         bmi_3gp = factor(bmi_3gp, 
+                          levels = c("<24.9", "25-29.9", "30+")),
+         prevalent_cvd = factor(prevalent_cvd, 
+                                levels = c("No", "Yes")),
+         study = factor(study, 
+                        levels = c("SMART Work & Life", "Raine Study Gen1")))
+
+# Convert NA to "Missing" category
+combined_demographics <- convert_na_to_missing(combined_demographics,
+                                               c("sex",
+                                                 "education",
+                                                 "employment",
+                                                 "bmi_3gp",
+                                                 "prevalent_cvd"))
+
+# Prep labels for Table 1
+row_labels <- list(age = "Age (years)",
+                   sex = "Sex",
+                   education = "Education",
+                   employment = "Employment status",
+                   bmi_3gp = "Body mass index (kg/m2)",
+                   prevalent_cvd = "Prevalent CVD")
+
+# Build table 1 by study
+table1 <- combined_demographics %>%
+  tbl_summary(by = study,
+              label = row_labels,
+              statistic = list(all_continuous() ~ "{mean} ({sd})",
+                               all_categorical() ~ "{n} ({p}%)"),
+              digits = list(age ~ 1),
+              missing = "no") %>%
+  modify_spanning_header(all_stat_cols() ~ "**Study**") %>%
+  remove_footnote_header() %>%
+  bold_labels()
+
+table1
+
+# Save Table 1 to .docx
+table1 %>%
+  as_gt() %>%
+  gt::gtsave(here("output", "prepared", "tables", "Table_1.docx"))
+```
+
+## Table 2: Descriptive statistics of accelerometer-derived phenotypes
+
+```{r}
+# Define phenotype columns/rows and labels
+pa_rows <- c("overall_activity", 
+             "steps", 
+             "cadence_peak1",
+             "mvpa", 
+             "lipa", 
+             "sedentary")
+
+pa_labels <- list(overall_activity = "Overall activity (mg/day)",
+                  steps            = "Step count (steps/day)",
+                  cadence_peak1    = "Peak 1-min cadence (steps/minute)",
+                  mvpa             = "MVPA (minutes/day)",
+                  lipa             = "Light physical activity (hours/day)",
+                  sedentary        = "Sedentary behaviour (hours/day)",
+                  daily_wear_time_hours  = "Wear time (hours/day)")
+
+cols <- c("SWL_wrist", "SWL_thigh", "Raine_wrist", "Raine_hip")
+
+col_labels <- c(label = "**Phenotype**",
+                SWL_wrist = "**SWL (wrist)**",
+                SWL_thigh = "**SWL (thigh)**",
+                Raine_wrist = "**Raine Study Gen1 (wrist)**",
+                Raine_hip = "**Raine Study Gen1 (hip)**")
+
+# Combine SWL and Raine datasets in wide format
+swl_wide   <- prep_wide(dat_swl_qced,  "SWL")
+raine_wide <- prep_wide(dat_raine_qced, "Raine")
+
+combined_wide <- bind_rows(swl_wide, raine_wide) %>%
+  select(study_wear_location, all_of(c("daily_wear_time_hours", pa_rows))) %>%
+  mutate(study_wear_location = factor(study_wear_location, levels = cols),
+         across(all_of(all_of(c("daily_wear_time_hours", pa_rows))), as.numeric))
+
+# Build summary table
+table_2 <- combined_wide %>%
+  tbl_summary(by = study_wear_location,
+              statistic = list(all_continuous() ~ "{mean} ({sd})",
+                               mvpa ~ "{median} ({p25}–{p75})",
+                               daily_wear_time_hours ~ "{median} ({p25}–{p75})"),
+              label = pa_labels,
+              digits = list(all_continuous() ~ 1,
+                            steps ~ 0,
+                            mvpa ~ 0),
+              missing = "no")
+
+# Apply clean column labels in correct order
+table_2 <- table_2 %>%
+  modify_header(label ~ col_labels["label"],
+                stat_1 ~ col_labels["SWL_wrist"],
+                stat_2 ~ col_labels["SWL_thigh"],
+                stat_3 ~ col_labels["Raine_wrist"],
+                stat_4 ~ col_labels["Raine_hip"]) %>%
+  modify_footnote(everything() ~ NA) %>%
+  bold_labels()
+
+table_2
+
+# Save Table 2 to .docx
+table_2 %>%
+  as_gt() %>%
+  gt::gtsave(here("output", "prepared", "tables", "Table_2.docx"))
+```
+
+# Main Figures
+
+## Figure 1: Scatter plots
+
+```{r}
+# Initialise constants
+inner_pad <- 0.02   # fraction of npc to expand box
+gap       <- 0.04   # relative gap between panels A and B
+
+# Prepare individual scatter plots for SWL
+plot1 <- make_scatter_plot(dat_swl_qced,
+                           phenotype = 'overall_activity_mean', 
+                           title = 'Overall activity',
+                           phenotype_units = 'mg/day',
+                           axes_lims = c(0, 60))
+
+plot2 <- make_scatter_plot(dat_swl_qced, 
+                           phenotype = 'steps_mean', 
+                           title = 'Step count',
+                           phenotype_units = 'steps/day',
+                           axes_lims = c(0, 30000))
+
+plot3 <- make_scatter_plot(dat_swl_qced, 
+                           phenotype = 'cadence_peak1_mean', 
+                           title = 'Peak 1-min cadence',
+                           phenotype_units = 'steps/minute',
+                           axes_lims = c(60, 180))
+
+plot4 <- make_scatter_plot(dat_swl_qced, 
+                           phenotype = 'mvpa_mean', 
+                           title = 'MVPA',
+                           phenotype_units = 'minutes/day',
+                           skewed_phenotype = TRUE,
+                           axes_lims = c(0, 200))
+
+plot5 <- make_scatter_plot(dat_swl_qced, 
+                           phenotype = 'lipa_mean', 
+                           title = 'Light physical activity',
+                           phenotype_units = 'hours/day',
+                           axes_lims = c(0, 12))
+
+plot6 <- make_scatter_plot(dat_swl_qced, 
+                           phenotype = 'sedentary_mean', 
+                           title = 'Sedentary behaviour',
+                           phenotype_units = 'hours/day',
+                           axes_lims = c(4, 16))
+
+# Combine all SWL plots
+panel_a <- arrangeGrob(ggplotGrob(plot1),
+                       ggplotGrob(plot2),
+                       ggplotGrob(plot3),
+                       ggplotGrob(plot4),
+                       ggplotGrob(plot5),
+                       ggplotGrob(plot6),
+                       ncol = 3)
+
+# Prepare individual scatter plots for Raine
+plot1 <- make_scatter_plot(dat_raine_qced, 
+                           phenotype = 'overall_activity_mean', 
+                           title = 'Overall activity',
+                           phenotype_units = 'mg/day',
+                           axes_lims = c(0, 60))
+
+plot2 <- make_scatter_plot(dat_raine_qced, 
+                           phenotype = 'steps_mean', 
+                           title = 'Step count',
+                           phenotype_units = 'steps/day',
+                           axes_lims = c(0, 30000))
+
+plot3 <- make_scatter_plot(dat_raine_qced, 
+                           phenotype = 'cadence_peak1_mean', 
+                           title = 'Peak 1-min cadence',
+                           phenotype_units = 'steps/minute',
+                           axes_lims = c(60, 180))
+
+plot4 <- make_scatter_plot(dat_raine_qced, 
+                           phenotype = 'mvpa_mean', 
+                           title = 'MVPA',
+                           phenotype_units = 'minutes/day',
+                           skewed_phenotype = TRUE,
+                           axes_lims = c(0, 200))
+
+plot5 <- make_scatter_plot(dat_raine_qced, 
+                           phenotype = 'lipa_mean', 
+                           title = 'Light physical activity',
+                           phenotype_units = 'hours/day',
+                           axes_lims = c(0, 12))
+
+plot6 <- make_scatter_plot(dat_raine_qced, 
+                           phenotype = 'sedentary_mean', 
+                           title = 'Sedentary behaviour',
+                           phenotype_units = 'hours/day',
+                           axes_lims = c(4, 16))
+
+# Combine all Raine plots
+panel_b <- arrangeGrob(ggplotGrob(plot1),
+                       ggplotGrob(plot2),
+                       ggplotGrob(plot3),
+                       ggplotGrob(plot4),
+                       ggplotGrob(plot5),
+                       ggplotGrob(plot6),
+                       ncol = 3)
+
+# Add titles to each panel
+panel_a <- gridExtra::arrangeGrob(
+  panel_a,
+  top = grid::textGrob(
+    "A. SMART Work & Life (wrist vs. thigh)",
+    x = 0.02,
+    y = 0.98,
+    just = c("left", "top"),
+    gp = grid::gpar(fontsize = 14, fontface = "bold")
+  )
+)
+
+panel_b <- gridExtra::arrangeGrob(
+  panel_b,
+  top = grid::textGrob(
+    "B. Raine Study Gen1 (wrist vs. hip)",
+    x = 0.02,
+    y = 0.98,
+    just = c("left", "top"),
+    gp = grid::gpar(fontsize = 14, fontface = "bold")
+  )
+)
+
+# Add black borders around each panel
+panel_a <- grid::grobTree(
+  panel_a,
+  grid::rectGrob(
+    x = 0.5, 
+    y = 0.5,
+    width  = unit(1, "npc") + unit(inner_pad, "npc"), 
+    height = unit(1, "npc") + unit(inner_pad, "npc"),
+    gp = grid::gpar(fill = NA, col = "black", lwd = 1)
+  )
+)
+
+panel_b <- grid::grobTree(
+  panel_b,
+  grid::rectGrob(
+    x = 0.5, 
+    y = 0.5,
+    width  = unit(1, "npc") + unit(inner_pad, "npc"),
+    height = unit(1, "npc") + unit(inner_pad, "npc"),
+    gp = grid::gpar(fill = NA, col = "black", lwd = 1)
+  )
+)
+
+# Stack the two boxed panels
+figure <- gridExtra::arrangeGrob(panel_a,
+                                 grid::nullGrob(),
+                                 panel_b,
+                                 ncol = 1,
+                                 heights = c(1, gap, 1))
+
+# Add small outer margin
+figure <- ggplot() +
+  theme_void() +
+  annotation_custom(figure) +
+  theme(plot.margin = grid::unit(c(0.5, 0.5, 0.5, 0.5), "cm"))
+
+# Save figure to file
+ggsave(filename = here("output", "prepared", "figures", "Figure_1.png"),
+       plot = figure,
+       width = 21,
+       height = 29.7,
+       units = "cm",
+       dpi = 300,
+       bg = "white")
+```
+
+# Supplementary Figures
+
+## Figure S2: Absolute agreement ICCs
+
+```{r}
+swl_icc_df <- map_dfr(pa_rows, function(pheno) {
+  icc_swl <- calculate_icc(
+    df   = dat_swl_qced,
+    col1 = paste0(pheno, "_mean_wrist"),
+    col2 = paste0(pheno, "_mean_thigh"),
+    fmt_sep = ","
+  )
+
+  tibble(
+    phenotype = pheno,
+    est = icc_swl$icc_est,
+    lci = icc_swl$icc_lci,
+    uci = icc_swl$icc_uci
+  )
+})
+
+raine_icc_df <- map_dfr(pa_rows, function(pheno) {
+  icc_raine <- calculate_icc(
+    df   = dat_raine_qced,
+    col1 = paste0(pheno, "_mean_wrist"),
+    col2 = paste0(pheno, "_mean_hip"),
+    fmt_sep = ","
+  )
+
+  tibble(
+    phenotype = pheno,
+    est = icc_raine$icc_est,
+    lci = icc_raine$icc_lci,
+    uci = icc_raine$icc_uci
+  )
+})
+
+vlines <- list(
+  ggplot2::geom_vline(xintercept = 0.75,
+                      linetype = "dashed",
+                      colour = "black",
+                      linewidth = 0.4)
+
+)
+
+forestplot_labels <- data.frame(
+  phenotype = pa_rows,
+  label = unname(unlist(pa_labels[pa_rows]))
+)
+
+figure <- ckbplotr::forest_plot(
+  list ("SMART Work & Life (wrist vs. thigh)" = swl_icc_df, "Raine Study Gen1 (wrist vs. hip)" = raine_icc_df),
+  row.labels = forestplot_labels,
+  col.key = "phenotype",
+  col.estimate = "est",
+  col.lci = "lci",
+  col.uci = "uci",
+  exponentiate = FALSE,
+  xlim = c(0, 1),
+  xticks = c(0, 0.25, 0.5, 0.75, 1),
+  xlab = c("ICC"),
+  right.heading = "ICC (95% CI)",
+  panel.width = unit(50, "mm"),
+  base_size = 10,
+  add = list(start = vlines)
+)
+
+ggsave(
+  filename = here("output", "prepared", "figures", "Figure_S2.png"),
+  plot = figure$plot,
+  width = 23,
+  height = 8,
+  units = "cm",
+  dpi = 300,
+  bg = "white"
+)
+```
+
+## Figure S3: Bland-Altman plots
+
+```{r}
+# Initialise constants
+inner_pad <- 0.02   # fraction of npc to expand box
+gap       <- 0.04   # relative gap between panels A and B
+
+# Prepare individual scatter plots for SWL
+plot1 <- make_bland_altman_plot(dat_swl_qced, 
+                                'overall_activity_mean', 
+                                'Overall activity',
+                                phenotype_units = 'mg/day')
+
+plot2 <- make_bland_altman_plot(dat_swl_qced, 
+                                'steps_mean', 
+                                'Step count',
+                                phenotype_units = 'steps/day',
+                                digits = 0)
+
+plot3 <- make_bland_altman_plot(dat_swl_qced, 
+                                'cadence_peak1_mean', 
+                                'Peak 1-min cadence',
+                                phenotype_units = 'steps/minute')
+
+plot4 <- make_bland_altman_plot(dat_swl_qced, 
+                                'mvpa_mean', 
+                                'MVPA',
+                                phenotype_units = 'minutes/day')
+
+plot5 <- make_bland_altman_plot(dat_swl_qced, 
+                                'lipa_mean', 
+                                'Light physical activity',
+                                phenotype_units = 'hours/day')
+
+plot6 <- make_bland_altman_plot(dat_swl_qced, 
+                                'sedentary_mean', 
+                                'Sedentary behaviour',
+                                phenotype_units = 'hours/day')
+
+# Combine all SWL plots
+panel_a <- arrangeGrob(ggplotGrob(plot1),
+                       ggplotGrob(plot2),
+                       ggplotGrob(plot3),
+                       ggplotGrob(plot4),
+                       ggplotGrob(plot5),
+                       ggplotGrob(plot6),
+                       ncol = 3)
+
+# Prepare individual scatter plots for Raine
+plot1 <- make_bland_altman_plot(dat_raine_qced, 
+                                'overall_activity_mean', 
+                                'Overall activity',
+                                phenotype_units = 'mg/day')
+
+plot2 <- make_bland_altman_plot(dat_raine_qced, 
+                                'steps_mean', 
+                                'Step count',
+                                phenotype_units = 'steps/day',
+                                digits = 0)
+
+plot3 <- make_bland_altman_plot(dat_raine_qced, 
+                                'cadence_peak1_mean', 
+                                'Peak 1-min cadence',
+                                phenotype_units = 'steps/minute')
+
+plot4 <- make_bland_altman_plot(dat_raine_qced, 
+                                'mvpa_mean', 
+                                'MVPA',
+                                phenotype_units = 'minutes/day')
+
+plot5 <- make_bland_altman_plot(dat_raine_qced, 
+                                'lipa_mean', 
+                                'Light physical activity',
+                                phenotype_units = 'hours/day')
+
+plot6 <- make_bland_altman_plot(dat_raine_qced, 
+                                'sedentary_mean', 
+                                'Sedentary behaviour',
+                                phenotype_units = 'hours/day')
+
+# Combine all Raine plots
+panel_b <- arrangeGrob(ggplotGrob(plot1),
+                       ggplotGrob(plot2),
+                       ggplotGrob(plot3),
+                       ggplotGrob(plot4),
+                       ggplotGrob(plot5),
+                       ggplotGrob(plot6),
+                       ncol = 3)
+
+
+# Add titles to each panel
+panel_a <- gridExtra::arrangeGrob(
+  panel_a,
+  top = grid::textGrob(
+    "A. SMART Work & Life (wrist vs. thigh)",
+    x = 0.02,
+    y = 0.98,
+    just = c("left", "top"),
+    gp = grid::gpar(fontsize = 14, fontface = "bold")
+  )
+)
+
+panel_b <- gridExtra::arrangeGrob(
+  panel_b,
+  top = grid::textGrob(
+    "B. Raine Study Gen1 (wrist vs. hip)",
+    x = 0.02,
+    y = 0.98,
+    just = c("left", "top"),
+    gp = grid::gpar(fontsize = 14, fontface = "bold")
+  )
+)
+
+# Add black borders around each panel
+panel_a <- grid::grobTree(
+  panel_a,
+  grid::rectGrob(
+    x = 0.5, 
+    y = 0.5,
+    width  = unit(1, "npc") + unit(inner_pad, "npc"), 
+    height = unit(1, "npc") + unit(inner_pad, "npc"),
+    gp = grid::gpar(fill = NA, col = "black", lwd = 1)
+  )
+)
+
+panel_b <- grid::grobTree(
+  panel_b,
+  grid::rectGrob(
+    x = 0.5, 
+    y = 0.5,
+    width  = unit(1, "npc") + unit(inner_pad, "npc"),
+    height = unit(1, "npc") + unit(inner_pad, "npc"),
+    gp = grid::gpar(fill = NA, col = "black", lwd = 1)
+  )
+)
+
+# Stack the two boxed panels
+figure <- gridExtra::arrangeGrob(panel_a,
+                                 grid::nullGrob(),
+                                 panel_b,
+                                 ncol = 1,
+                                 heights = c(1, gap, 1))
+
+# Add small outer margin
+figure <- ggplot() +
+  theme_void() +
+  annotation_custom(figure) +
+  theme(plot.margin = grid::unit(c(0.5, 0.5, 0.5, 0.5), "cm"))
+
+# Save figure to file
+ggsave(filename = here("output", "prepared", "figures", "Figure_S3.png"),
+       plot = figure,
+       width = 21,
+       height = 29.7,
+       units = "cm",
+       dpi = 300,
+       bg = "white")
+```
+## Figure S4: Equivalence tests
+
+```{r}
+eq_zone <- 0.1
+
+equi_test_swl_list <- list()
+equi_test_raine_list <- list()
+
+for (pheno in pa_rows) {
+
+  res_swl <- equivalence_test(dat_swl_qced, paste0(pheno, "_mean"), eq_zone)
+  res_raine <- equivalence_test(dat_raine_qced, paste0(pheno, "_mean"), eq_zone)
+
+  equi_test_swl_list[[pheno]] <- data.frame(
+    phenotype = pheno,
+    mean_ratio = res_swl$mean_ratio,
+    lci = res_swl$lci,
+    uci = res_swl$uci,
+    is_equivalent = res_swl$is_equivalent
+  )
+
+  equi_test_raine_list[[pheno]] <- data.frame(
+    phenotype = pheno,
+    mean_ratio = res_raine$mean_ratio,
+    lci = res_raine$lci,
+    uci = res_raine$uci,
+    is_equivalent = res_raine$is_equivalent
+  )
+}
+
+equi_test_swl <- do.call(rbind, equi_test_swl_list)
+equi_test_raine <- do.call(rbind, equi_test_raine_list)
+
+row.names(equi_test_swl) <- NULL
+row.names(equi_test_raine) <- NULL
+
+vlines <- list(
+  ggplot2::geom_vline(xintercept = 1 - eq_zone,
+                      linetype = "dashed",
+                      colour = "black",
+                      linewidth = 0.4),
+  ggplot2::geom_vline(xintercept = 1 + eq_zone,
+                      linetype = "dashed",
+                      colour = "black",
+                      linewidth = 0.4)
+)
+
+forestplot_labels <- data.frame(
+  phenotype = pa_rows,
+  label = unname(unlist(pa_labels[pa_rows]))
+)
+
+figure <- ckbplotr::forest_plot(
+  list ("SMART Work & Life (wrist vs. thigh)" = equi_test_swl, "Raine Study Gen1 (wrist vs. hip)" = equi_test_raine),
+  row.labels = forestplot_labels,
+  col.key = "phenotype",
+  col.estimate = "mean_ratio",
+  col.lci = "lci",
+  col.uci = "uci",
+  exponentiate = FALSE,
+  xlim = c(0.80, 1.20),
+  xlab = c("Mean ratio (Thigh/Wrist)", "Mean ratio (Hip/Wrist)"),
+  right.heading = "Mean ratio (90% CI)",
+  nullval = TRUE,
+  panel.width = unit(50, "mm"),
+  base_size = 10,
+  left.gap = c("I", "I"),
+  add = list(start = vlines)
+)
+
+ggsave(
+  filename = here("output", "prepared", "figures", "Figure_S4.png"),
+  plot = figure$plot,
+  width = 23,
+  height = 8,
+  units = "cm",
+  dpi = 300,
+  bg = "white"
+)
+```
+
+## Figure S5: Peak 30-min cadence
+
+```{r}
+# Initialise constants
+inner_pad <- 0.02   # fraction of npc to expand box
+gap       <- 0.04   # relative gap between panels A and B
+
+# Prepare individual scatter plots for SWL
+plot1 <- make_scatter_plot(dat_swl_qced,
+                           phenotype = 'cadence_peak30_mean',
+                           title = 'Peak 30-min cadence',
+                           phenotype_units = 'steps/minute',
+                           axes_lims = c(40, 160))
+
+plot2 <- make_bland_altman_plot(dat_swl_qced,
+                                phenotype = 'cadence_peak30_mean',
+                                title = 'Peak 30-min cadence',
+                                phenotype_units = 'steps/minute')
+
+# Combine all SWL plots
+panel_a <- arrangeGrob(ggplotGrob(plot1),
+                       ggplotGrob(plot2),
+                       ncol = 2)
+
+# Prepare individual scatter plots for Raine
+plot1 <- make_scatter_plot(dat_raine_qced,
+                           phenotype = 'cadence_peak30_mean',
+                           title = 'Peak 30-min cadence',
+                           phenotype_units = 'steps/minute',
+                           axes_lims = c(40, 160))
+
+plot2 <- make_bland_altman_plot(dat_raine_qced,
+                                phenotype = 'cadence_peak30_mean',
+                                title = 'Peak 30-min cadence',
+                                phenotype_units = 'steps/minute')
+
+# Combine all Raine plots
+panel_b <- arrangeGrob(ggplotGrob(plot1),
+                       ggplotGrob(plot2),
+                       ncol = 2)
+
+# Add titles to each panel
+panel_a <- gridExtra::arrangeGrob(
+  panel_a,
+  top = grid::textGrob(
+    "A. SMART Work & Life (wrist vs. thigh)",
+    x = 0.02,
+    y = 0.98,
+    just = c("left", "top"),
+    gp = grid::gpar(fontsize = 14, fontface = "bold")
+  )
+)
+
+panel_b <- gridExtra::arrangeGrob(
+  panel_b,
+  top = grid::textGrob(
+    "B. Raine Study Gen1 (wrist vs. hip)",
+    x = 0.02,
+    y = 0.98,
+    just = c("left", "top"),
+    gp = grid::gpar(fontsize = 14, fontface = "bold")
+  )
+)
+
+# Add black borders around each panel
+panel_a <- grid::grobTree(
+  panel_a,
+  grid::rectGrob(
+    x = 0.5,
+    y = 0.5,
+    width  = unit(1, "npc") + unit(inner_pad, "npc"),
+    height = unit(1, "npc") + unit(inner_pad, "npc"),
+    gp = grid::gpar(fill = NA, col = "black", lwd = 1)
+  )
+)
+
+panel_b <- grid::grobTree(
+  panel_b,
+  grid::rectGrob(
+    x = 0.5,
+    y = 0.5,
+    width  = unit(1, "npc") + unit(inner_pad, "npc"),
+    height = unit(1, "npc") + unit(inner_pad, "npc"),
+    gp = grid::gpar(fill = NA, col = "black", lwd = 1)
+  )
+)
+
+# Stack the two boxed panels
+figure <- gridExtra::arrangeGrob(panel_a,
+                                 grid::nullGrob(),
+                                 panel_b,
+                                 ncol = 1,
+                                 heights = c(1, gap, 1))
+
+# Add small outer margin
+figure <- ggplot() +
+  theme_void() +
+  annotation_custom(figure) +
+  theme(plot.margin = grid::unit(c(0.5, 0.5, 0.5, 0.5), "cm"))
+
+# Save figure to file
+ggsave(filename = here("output", "prepared", "figures", "Figure_S5.png"),
+       plot = figure,
+       width = 16,
+       height = 20,
+       units = "cm",
+       dpi = 300,
+       bg = "white")
+```
+
+## Figure S6: Raine Study Gen1 ENMO vs. counts scatter plot
+
+```{r}
+# Prepare phenotype columns
+dat_raine_qced <- dat_raine_qced %>%
+  mutate(overall_activity_counts_mean_wrist = overall_activity_mean_wrist) %>%
+  rename(overall_activity_counts_mean_hip = overall_activity_counts_mean)
+
+ corr_res <- calculate_corr(
+   dat_raine_qced,
+   "overall_activity_counts_mean_wrist",
+   "overall_activity_counts_mean_hip"
+ )
+
+# Prepare plot
+plot <- make_scatter_plot(dat_raine_qced,
+                          'overall_activity_counts_mean',
+                          'Overall activity',
+                          phenotype_units = c('mg/day', 'cpm/day'),
+                          include_xy_line = FALSE)
+
+plot <- plot + 
+  labs(title = paste0("Overall activity\n", "(", corr_res$corr_text, ")"))
+
+
+# Save figure to file
+ggsave(filename = here("output", "prepared", "figures", "Figure_S6.png"),
+       plot = plot,
+       width = 8,
+       height = 8,
+       units = "cm",
+       dpi = 300,
+       bg = "white")
+```
+
+
