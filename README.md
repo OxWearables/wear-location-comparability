@@ -1,15 +1,15 @@
 # Wear-location comparability
 
-Analysis code for **"Towards harmonised accelerometer-derived physical activity: A
-comparability study across wrist, thigh, and hip wear locations"**.
-
-The study assesses the agreement of movement behaviours derived from wrist-, thigh-
+The study assesses the comparability of movement behaviours derived from wrist-, thigh-
 and hip-worn accelerometers in free-living adults, using data from *SMART Work & Life*
 (wrist vs. thigh), the *Raine Study Gen1* (wrist vs. hip), and *CAP-24* as external
 validation.
 
 > **Citation** — 
-> DOI: `TBC`
+> Zisou, C., Maylor, B.D., Acquah, A. et al. Towards harmonised accelerometer-derived physical activity: a comparability study across wrist, thigh, and hip wear locations. Int J Behav Nutr Phys Act (2026). https://doi.org/10.1186/s12966-026-01975-0
+
+<h2>Figure: Scatter plots, correlations, and calibration equations of physical activity and sedentary behaviour measures across wear locations</h2>
+<img src="img/Figure_1.png" width="700"/><br>
 
 ## Repository structure
 
