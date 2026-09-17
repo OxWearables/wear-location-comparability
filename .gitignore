@@ -236,6 +236,7 @@ rsconnect/
 **/*.svg
 **/*.tif
 **/*.tiff
+!img/Figure_1.png
 
 # Other file types ===================================================================
 **/*.html
